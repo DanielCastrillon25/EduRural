@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>EduRural · Administración</title>
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="style.css">
+<style>
+  #app { max-width: 1000px; }
+  .tabs { display: flex; gap: 6px; flex-wrap: wrap; padding: 12px 16px 0; }
+  .tabs button { border: 2px solid var(--borde); background: #fff; border-radius: 99px; padding: 8px 14px; cursor: pointer; font-weight: 600; min-height: 44px; }
+  .tabs button.activo { background: var(--verde); color: #fff; border-color: var(--verde); }
+  .form-fila { display: flex; gap: 8px; flex-wrap: wrap; align-items: flex-end; }
+  .form-fila > * { flex: 1; min-width: 140px; }
+  .form-fila label { margin-top: 0; }
+  .tabla-wrap { overflow-x: auto; }
+</style>
+</head>
+<body>
+<div id="app"></div>
+<script>
+'use strict';
+const app = document.getElementById('app');
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+let S = null; try { S = JSON.parse(sessionStorage.getItem('er_admin') || 'null'); } catch {}
+const guardar = () => { try { S ? sessionStorage.setItem('er_admin', JSON.stringify(S)) : sessionStorage.removeItem('er_admin'); } catch {} };
+let tab = 'resumen';
+function toast(m) { document.querySelector('.toast')?.remove(); const t = document.createElement('div'); t.className = 'toast'; t.textContent = m; document.body.appendChild(t); setTimeout(() => t.remove(), 3500); }
+
+async function api(path, { method = 'GET', body } = {}, retry = true) {
+  const r = await fetch('/api/v1' + path, { method, headers: { 'Content-Type': 'application/json', ...(S ? { Authorization: 'Bearer ' + S.access } : {}) }, body: body ? JSON.stringify(body) : undefined });
+  const d = await r.json().catch(() => ({}));
+  if (r.status === 401 && S && retry) {
+    const t = await fetch('/api/v1/auth/refresh', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ refresh: S.refresh }) });
+    if (t.ok) { S.access = (await t.json()).access; guardar(); return api(path, { method, body }, false); }
+    S = null; guardar(); render(); throw new Error('Sesión vencida');
+  }
+  if (!r.ok) throw new Error(d.error || 'Error ' + r.status);
+  return d;
+}
+
+function login() {
+  app.innerHTML = `<header class="top"><h1>EduRural · Administración</h1></header>
+  <main class="wrap" style="max-width:420px;margin:0 auto"><div class="card"><h2>Ingreso del administrador</h2>
+  <form id="f"><label for="co">Correo</label><input id="co" type="email" required><label for="pw">Contraseña</label><input id="pw" type="password" required>
+  <div id="err" class="error"></div><button class="btn bloque" style="margin-top:12px">Entrar</button></form>
+  <p class="small muted" style="margin-top:12px">Demo: <b>admin@edurural.test</b> / <b>admin123</b></p></div>
+  <p class="center"><a href="/">← Ir a la app móvil</a></p></main>`;
+  document.getElementById('f').onsubmit = async e => {
+    e.preventDefault();
+    try {
+      const r = await api('/auth/login', { method: 'POST', body: { correo: co.value, contrasena: pw.value } });
+      if (r.usuario.rol !== 'admin') throw new Error('Esta cuenta no es de administrador. Los docentes entran por la app móvil.');
+      S = { access: r.access, refresh: r.refresh, usuario: r.usuario }; guardar(); render();
+    } catch (ex) { err.textContent = ex.message; }
+  };
+}
+
+const TABS = [['resumen', '📊 Reportes'], ['sedes', '🏫 Sedes'], ['grupos', '👥 Grupos'], ['docentes', '🧑‍🏫 Docentes'], ['estudiantes', '🎒 Estudiantes'], ['contenido', '📚 Contenido'], ['auditoria', '🕵️ Auditoría']];
+async function render() {
+  if (!S) return login();
+  app.innerHTML = `<header class="top"><h1>EduRural · Administración</h1><span class="chip">${esc(S.usuario.nombre)}</span><button class="btn claro chico" id="salir">Salir</button></header>
+  <nav class="tabs">${TABS.map(([k, t]) => `<button data-t="${k}" class="${k === tab ? 'activo' : ''}">${t}</button>`).join('')}</nav>
+  <main class="wrap" id="main"><p class="muted">Cargando…</p></main>`;
+  salir.onclick = () => { S = null; guardar(); render(); };
+  document.querySelectorAll('[data-t]').forEach(b => b.onclick = () => { tab = b.dataset.t; render(); });
+  try { await VISTAS[tab](document.getElementById('main')); } catch (e) { document.getElementById('main').innerHTML = `<div class="card alerta">⚠️ ${esc(e.message)}</div>`; }
+}
+const tabla = (cabeza, filas) => `<div class="tabla-wrap"><table class="tabla"><tr>${cabeza.map(c => `<th>${c}</th>`).join('')}</tr>${filas.join('') || `<tr><td colspan="${cabeza.length}" class="muted">Sin datos</td></tr>`}</table></div>`;
+async function accion(fn, msg) { try { await fn(); if (msg) toast(msg); render(); } catch (e) { toast(e.message); } }
+
+const VISTAS = {
+  async resumen(m) {
+    const r = await api('/admin/reportes');
+    m.innerHTML = `<h2>Reporte por sede y grado (semana actual)</h2><div class="card">${tabla(['Sede', 'Grado', 'Código', 'Estudiantes', 'Activados', 'Activos semana', 'Aciertos', 'Necesitan apoyo'],
+      r.map(g => `<tr><td>${esc(g.sede)}</td><td>${g.grado}°</td><td>${esc(g.codigo_clase)}</td><td>${g.estudiantes}</td><td>${g.activados}</td><td>${g.activos_semana}</td><td>${g.aciertos ?? '–'}${g.aciertos !== null ? ' %' : ''}</td><td>${g.necesitan_apoyo ? `<span class="badge rojo">${g.necesitan_apoyo}</span>` : 0}</td></tr>`))}</div>`;
+  },
+  async sedes(m) {
+    const r = await api('/admin/sedes');
+    m.innerHTML = `<div class="card"><h3>Nueva sede</h3><form id="f" class="form-fila"><div><label>Nombre</label><input id="n" type="text" required></div><div><label>Vereda o corregimiento</label><input id="v" type="text"></div><button class="btn">Crear</button></form></div>
+    <div class="card">${tabla(['Sede', 'Vereda', 'Grupos', ''], r.map(s => `<tr><td>${esc(s.nombre)}</td><td>${esc(s.vereda)}</td><td>${s.grupos}</td><td><button class="btn sec chico" data-del="${s.id}">Borrar</button></td></tr>`))}</div>`;
+    f.onsubmit = e => { e.preventDefault(); accion(() => api('/admin/sedes', { method: 'POST', body: { nombre: n.value, vereda: v.value } }), 'Sede creada'); };
+    m.querySelectorAll('[data-del]').forEach(b => b.onclick = () => confirm('¿Borrar la sede y todos sus grupos y estudiantes?') && accion(() => api('/admin/sedes/' + b.dataset.del, { method: 'DELETE' }), 'Sede borrada'));
+  },
+  async grupos(m) {
+    const [gs, sedes, us] = await Promise.all([api('/admin/grupos'), api('/admin/sedes'), api('/admin/usuarios')]);
+    const docentes = us.filter(u => u.rol === 'docente' && u.activo);
+    m.innerHTML = `<div class="card"><h3>Nuevo grupo</h3><form id="f" class="form-fila">
+      <div><label>Sede</label><select id="s">${sedes.map(s => `<option value="${s.id}">${esc(s.nombre)}</option>`).join('')}</select></div>
+      <div><label>Grado</label><select id="g">${[1,2,3,4,5,6,7,8,9,10,11].map(n => `<option ${n === 5 ? 'selected' : ''}>${n}</option>`).join('')}</select></div>
+      <div><label>Código de clase</label><input id="c" type="text" required placeholder="Ej.: ESPERANZA4"></div>
+      <div><label>Docente</label><select id="d"><option value="">Sin asignar</option>${docentes.map(u => `<option value="${u.id}">${esc(u.nombre)}</option>`).join('')}</select></div>
+      <button class="btn">Crear</button></form></div>
+    <div class="card">${tabla(['Sede', 'Grado', 'Código de clase', 'Docente', 'Estudiantes', ''], gs.map(g => `<tr><td>${esc(g.sede)}</td><td>${g.grado}°</td><td><b>${esc(g.codigo_clase)}</b></td><td>${esc(g.docente || '—')}</td><td>${g.estudiantes}</td><td><button class="btn sec chico" data-del="${g.id}">Borrar</button></td></tr>`))}</div>`;
+    f.onsubmit = e => { e.preventDefault(); accion(() => api('/admin/grupos', { method: 'POST', body: { sede_id: s.value, grado: g.value, codigo_clase: c.value, docente_id: d.value || null } }), 'Grupo creado'); };
+    m.querySelectorAll('[data-del]').forEach(b => b.onclick = () => confirm('¿Borrar el grupo y sus estudiantes?') && accion(() => api('/admin/grupos/' + b.dataset.del, { method: 'DELETE' }), 'Grupo borrado'));
+  },
+  async docentes(m) {
+    const us = await api('/admin/usuarios');
+    m.innerHTML = `<div class="card"><h3>Nuevo docente</h3><form id="f" class="form-fila"><div><label>Nombre</label><input id="n" type="text" required></div>
+      <div><label>Correo institucional</label><input id="c" type="email" required></div><div><label>Contraseña inicial</label><input id="p" type="text" minlength="6" required></div><button class="btn">Crear</button></form></div>
+    <div class="card">${tabla(['Nombre', 'Correo', 'Rol', 'Estado', ''], us.map(u => `<tr><td>${esc(u.nombre)}</td><td>${esc(u.correo)}</td><td>${u.rol}</td><td>${u.activo ? '<span class="badge">Activo</span>' : '<span class="badge gris">Inactivo</span>'}</td>
+      <td>${u.rol === 'docente' ? `<button class="btn sec chico" data-act="${u.id}" data-v="${u.activo ? 0 : 1}">${u.activo ? 'Desactivar' : 'Activar'}</button>` : ''}</td></tr>`))}</div>`;
+    f.onsubmit = e => { e.preventDefault(); accion(() => api('/admin/usuarios', { method: 'POST', body: { nombre: n.value, correo: c.value, contrasena: p.value } }), 'Docente creado'); };
+    m.querySelectorAll('[data-act]').forEach(b => b.onclick = () => accion(() => api(`/admin/usuarios/${b.dataset.act}/activo`, { method: 'POST', body: { activo: b.dataset.v === '1' } }), 'Listo'));
+  },
+  async estudiantes(m) {
+    const gs = await api('/admin/grupos');
+    const gsel = Number(sessionStorage.getItem('er_admin_g')) || gs[0]?.id;
+    const es = gsel ? await api('/admin/estudiantes?grupo_id=' + gsel) : [];
+    m.innerHTML = `<div class="card"><div class="form-fila"><div><label>Grupo</label><select id="g">${gs.map(g => `<option value="${g.id}" ${g.id === gsel ? 'selected' : ''}>${esc(g.sede)} · ${g.grado}° · ${esc(g.codigo_clase)}</option>`).join('')}</select></div></div></div>
+    <div class="card"><h3>Agregar estudiante</h3><form id="f" class="form-fila"><div><label>Nombre</label><input id="n" type="text" required></div><div><label>Código (opcional)</label><input id="c" type="text" placeholder="Se genera solo: E-13"></div><button class="btn">Agregar</button></form>
+      <p class="small muted">Del estudiante solo se guardan nombre, código, grado y sede (Ley 1581).</p></div>
+    <div class="card"><h3>Cargar en lote (CSV)</h3><p class="small muted">Columnas: <code>nombre,codigo,codigo_clase</code>. El código puede ir vacío.</p>
+      <input type="file" id="csv" accept=".csv,text/csv"> <a href="#" id="ej" class="small">Descargar ejemplo</a><div id="res" class="small" style="margin-top:8px"></div></div>
+    <div class="card">${tabla(['Código', 'Nombre', 'Cuenta', ''], es.map(e => `<tr><td><b>${esc(e.codigo)}</b></td><td>${esc(e.nombre)}</td><td>${e.activado ? '<span class="badge">Activada</span>' : '<span class="badge gris">Sin activar</span>'}</td><td><button class="btn sec chico" data-del="${e.id}">Borrar</button></td></tr>`))}</div>`;
+    g.onchange = () => { sessionStorage.setItem('er_admin_g', g.value); render(); };
+    f.onsubmit = e => { e.preventDefault(); accion(() => api('/admin/estudiantes', { method: 'POST', body: { grupo_id: gsel, nombre: n.value, codigo: c.value } }), 'Estudiante agregado'); };
+    m.querySelectorAll('[data-del]').forEach(b => b.onclick = () => confirm('¿Borrar el estudiante y todo su progreso?') && accion(() => api('/admin/estudiantes/' + b.dataset.del, { method: 'DELETE' }), 'Estudiante borrado'));
+    ej.onclick = e => { e.preventDefault(); const cod = gs.find(x => x.id === gsel)?.codigo_clase || 'CODAZZI5';
+      const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([`nombre,codigo,codigo_clase\nCarlos Pérez,,${cod}\nLaura Gómez,E-20,${cod}\n`], { type: 'text/csv' })); a.download = 'estudiantes_ejemplo.csv'; a.click(); };
+    csv.onchange = async () => {
+      const txt = await csv.files[0].text();
+      const lineas = txt.replace(/^﻿/, '').split(/\r?\n/).filter(l => l.trim());
+      const cab = lineas.shift().split(/[,;]/).map(h => h.trim().toLowerCase());
+      const filas = lineas.map(l => { const v = l.split(/[,;]/); return Object.fromEntries(cab.map((h, i) => [h, (v[i] || '').trim()])); });
+      try { const r = await api('/admin/estudiantes/importar', { method: 'POST', body: { filas } });
+        res.innerHTML = `✅ ${r.creados} estudiantes creados.` + (r.errores.length ? `<br><span class="error">${r.errores.map(esc).join('<br>')}</span>` : '');
+        if (r.creados) setTimeout(render, 1800);
+      } catch (e) { res.textContent = e.message; }
+    };
+  },
+  async contenido(m) {
+    m.innerHTML = `<div class="card"><h3>Cargar contenido desde JSON</h3><p class="small muted">Mientras no exista editor, las lecciones se cargan con un archivo. Si una lección ya existe (mismo título y nivel), se actualiza y sube de versión; los teléfonos la reciben en su próxima sincronización.</p>
+      <textarea id="j" style="min-height:260px;font-family:monospace;font-size:.85rem">${esc(JSON.stringify({ materias: [{ nombre: 'Lenguaje', grado: 5, icono: '📖', lecciones: [{ nivel: 1, titulo: 'El sustantivo', ilustracion: '🐓', mb: 3.5, contenido: ['Los sustantivos son palabras que nombran personas, animales, cosas o lugares.', 'Ejemplos: gallina, finca, río, María.'], escenas: ['¿Qué ves en la finca?', 'Una gallina 🐓', '"Gallina" es un sustantivo'], preguntas: [{ enunciado: '¿Cuál es un sustantivo?', opciones: ['correr', 'mango', 'bonito', 'rápido'], correcta: 1, pista: 'Nombra una cosa.' }] }] }] }, null, 2))}</textarea>
+      <button class="btn" id="imp" style="margin-top:10px">Importar</button><div id="res" class="small" style="margin-top:8px"></div></div>`;
+    imp.onclick = async () => {
+      try { const r = await api('/admin/contenido/importar', { method: 'POST', body: JSON.parse(j.value) }); res.textContent = `✅ ${r.lecciones} lecciones y ${r.preguntas} preguntas cargadas.`; }
+      catch (e) { res.textContent = '⚠️ ' + e.message; }
+    };
+  },
+  async auditoria(m) {
+    const r = await api('/admin/auditoria');
+    m.innerHTML = `<h2>Registro de auditoría</h2><p class="small muted">Quién consultó o cambió datos de estudiantes.</p><div class="card">${tabla(['Fecha', 'Usuario', 'Acción', 'Estudiante', 'Detalle'],
+      r.map(a => `<tr><td class="small">${new Date(a.fecha).toLocaleString('es-CO')}</td><td>${esc(a.usuario)}</td><td>${esc(a.accion.replace(/_/g, ' '))}</td><td>${esc(a.estudiante || '')}</td><td class="small">${esc(a.detalle || '')}</td></tr>`))}</div>`;
+  }
+};
+render();
+</script>
+</body>
+</html>

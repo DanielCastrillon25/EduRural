@@ -1,0 +1,11 @@
+{
+  "name": "edurural",
+  "version": "1.0.0",
+  "description": "EduRural MVP: app web móvil offline-first + API Node/SQLite",
+  "private": true,
+  "engines": { "node": ">=22.13" },
+  "scripts": {
+    "start": "node --no-warnings server.js",
+    "reset": "node -e \"require('fs').rmSync('data',{recursive:true,force:true})\" && node --no-warnings server.js"
+  }
+}
