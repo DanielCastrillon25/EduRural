@@ -14,7 +14,8 @@ const DATA_DIR = path.join(__dirname, 'data');
 fs.mkdirSync(DATA_DIR, { recursive: true });
 const SECRET_FILE = path.join(DATA_DIR, '.secret');
 if (!fs.existsSync(SECRET_FILE)) fs.writeFileSync(SECRET_FILE, crypto.randomBytes(32).toString('hex'));
-const SECRET = process.env.EDURURAL_SECRET || fs.readFileSync(SECRET_FILE, 'utf8').trim();
+// En Render el disco se borra en cada reinicio: sin una clave fija, las sesiones se perderían. Mejor definir EDURURAL_SECRET allí.
+const SECRET = process.env.EDURURAL_SECRET || (process.env.RENDER ? 'edurural-demo-' + (process.env.RENDER_SERVICE_ID || 'render') : fs.readFileSync(SECRET_FILE, 'utf8').trim());
 const DEMO = process.env.DEMO !== '0';
 
 // ---------------------------------------------------------------- Base de datos
@@ -243,7 +244,10 @@ route('POST', '/auth/activar', null, ({ body }) => {
   const g = q('SELECT g.*, s.nombre sede FROM grupos g JOIN sedes s ON s.id=g.sede_id WHERE upper(g.codigo_clase)=?').get(texto(body.codigo_clase, 40).toUpperCase());
   if (!g) falla(404, 'Ese código de clase no existe. Pídeselo a tu profe.');
   if (Number(body.grado) !== g.grado) falla(400, 'El grado no coincide con el código de clase.');
-  const e = q('SELECT e.*, u.nombre FROM estudiantes e JOIN usuarios u ON u.id=e.usuario_id WHERE e.grupo_id=? AND upper(e.codigo)=?').get(g.id, texto(body.codigo_estudiante, 20).toUpperCase());
+  // Acepta "E-07", "e7", "E 07" o solo "7"
+  let cod = texto(body.codigo_estudiante, 20).toUpperCase().replace(/\s+/g, '');
+  const num = cod.match(/^E?-?(\d{1,3})$/); if (num) cod = 'E-' + num[1].padStart(2, '0');
+  const e = q('SELECT e.*, u.nombre FROM estudiantes e JOIN usuarios u ON u.id=e.usuario_id WHERE e.grupo_id=? AND upper(e.codigo)=?').get(g.id, cod);
   if (!e) falla(404, 'No encontramos tu código de estudiante en esa clase.');
   if (!/^[a-f0-9]{64}$/.test(body.hash_pin || '')) falla(400, 'PIN inválido');
   const dispId = 'd-' + crypto.randomBytes(6).toString('hex');
@@ -589,13 +593,13 @@ function seed() {
   let s = 42; const rnd = () => { s = (s * 1664525 + 1013904223) % 4294967296; return s / 4294967296; };
   tx(() => {
     const inst = Number(q('INSERT INTO instituciones(nombre, municipio) VALUES (?,?)').run('Institución Educativa Rural (demo)', 'Agustín Codazzi, Cesar').lastInsertRowid);
-    const sede1 = Number(q('INSERT INTO sedes(institucion_id, nombre, vereda) VALUES (?,?,?)').run(inst, 'Sede La Esperanza', 'Vereda La Esperanza').lastInsertRowid);
+    const sede1 = Number(q('INSERT INTO sedes(institucion_id, nombre, vereda) VALUES (?,?,?)').run(inst, 'Sede Badillo', 'Corregimiento de Badillo').lastInsertRowid);
     const sede2 = Number(q('INSERT INTO sedes(institucion_id, nombre, vereda) VALUES (?,?,?)').run(inst, 'Sede El Rosario', 'Corregimiento Casacará').lastInsertRowid);
     const nuevoUsuario = (rol, nombre, correo, pass) => Number(q('INSERT INTO usuarios(institucion_id, rol, nombre, correo, hash_contrasena) VALUES (?,?,?,?,?)').run(inst, rol, nombre, correo, pass ? hashPass(pass) : null).lastInsertRowid);
     nuevoUsuario('admin', 'Administración (demo)', 'admin@edurural.test', 'admin123');
     const doc1 = nuevoUsuario('docente', 'Profe Demo', 'docente@edurural.test', 'docente123');
     const doc2 = nuevoUsuario('docente', 'Profe Rosario', 'docente2@edurural.test', 'docente123');
-    const g1 = Number(q('INSERT INTO grupos(sede_id, grado, anio, codigo_clase, docente_id) VALUES (?,?,?,?,?)').run(sede1, 5, 2026, 'CODAZZI5', doc1).lastInsertRowid);
+    const g1 = Number(q('INSERT INTO grupos(sede_id, grado, anio, codigo_clase, docente_id) VALUES (?,?,?,?,?)').run(sede1, 5, 2026, 'BADILLO5', doc1).lastInsertRowid);
     const g2 = Number(q('INSERT INTO grupos(sede_id, grado, anio, codigo_clase, docente_id) VALUES (?,?,?,?,?)').run(sede2, 5, 2026, 'ROSARIO5', doc2).lastInsertRowid);
     importarContenido(CONTENIDO);
 
@@ -684,7 +688,11 @@ async function handleApi(req, res, url) {
       if (!tipoOk) falla(401, 'Sesión vencida');
       if (!r.roles.includes(user.rol)) falla(403, 'No tienes permiso para esto');
       if (user.rol === 'estudiante') {
-        if (!q('SELECT 1 FROM dispositivos WHERE id=? AND estudiante_id=?').get(user.disp, user.est)) falla(401, 'Este teléfono ya no está registrado');
+        if (!q('SELECT 1 FROM dispositivos WHERE id=? AND estudiante_id=?').get(user.disp, user.est)) {
+          // En el plan gratis del hosting la base se reinicia: si el estudiante sigue existiendo, se vuelve a registrar el teléfono.
+          if (!q('SELECT 1 FROM estudiantes WHERE id=?').get(user.est)) falla(401, 'Este teléfono ya no está registrado');
+          q('INSERT OR IGNORE INTO dispositivos(id, estudiante_id, modelo) VALUES (?,?,?)').run(user.disp, user.est, 'Teléfono registrado de nuevo');
+        }
       } else if (!q('SELECT 1 FROM usuarios WHERE id=? AND activo=1').get(user.sub)) falla(401, 'Cuenta desactivada');
     }
     const body = ['POST', 'PUT', 'PATCH'].includes(req.method) ? await readJson(req) : {};

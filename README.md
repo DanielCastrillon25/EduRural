@@ -18,8 +18,8 @@ npm run reset      # borra la base y vuelve a crear los datos de demostración
 
 | Rol | Cómo entra |
 |---|---|
-| Estudiante | Código de clase **CODAZZI5**, grado **5°**, código **E-07** (está sin activar), y crea un PIN |
-| Docente | docente@edurural.test / docente123 (grupo 5° Sede La Esperanza) |
+| Estudiante | Código de clase **BADILLO5**, grado **5°**, código **E-01** a **E-12** (E-07 está sin historial), y crea un PIN |
+| Docente | docente@edurural.test / docente123 (grupo 5° Sede Badillo) |
 | Docente 2 | docente2@edurural.test / docente123 (otro grupo: sirve para mostrar que no ve datos ajenos) |
 | Administrador | admin@edurural.test / admin123 |
 
